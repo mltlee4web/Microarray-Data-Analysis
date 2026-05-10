@@ -2,7 +2,7 @@
 #
 # RANK ANALYSIS OF MICROARRAYS (RAM)
 #
-# The following two examples were given in in Lee, Gray, Bjorkbacka, Freeman.
+# The following two examples were given in Lee, Gray, Bjorkbacka, Freeman.
 # Generalized Rank Tests for Replicated Microarray Data, 
 # Statistical Applications in Genetics and Molecular Biology,(2005),
 # Vol. 4: No. 1, Article 3. http://www.bepress.com/sagmb/vol4/iss1/art3
@@ -86,18 +86,19 @@ clust <- c(1:8,1:8)
 #     the number of genes.  The number of genes with statistics >=
 #     this critical value is determined for each combination.  
 #
-# 'cluster' is specified, 'stratify=FALSE', 'permute.cluster=TRUE'
+# 'cluster' is specified, 'permute.cluster=TRUE'
 # it is assumed that group or treatment is defined at the cluster level
 # (that is, all members of each cluster are in the same group). In this case
 # statistics are computed the same as in the independence case, but only
 # whole clusters are permuted to preserve the within cluster dependence.
+# 'expord=TRUE' is set to compute the expected order statistic.
 
-res1 <- permax(data=data1,ig1=grp,nperm=0, ranks=TRUE,cluster=clust,
-               stratify=FALSE, permute.cluster=TRUE, nl=2,nr=5,expord=TRUE)
+res1 <- permax(data=data1, ig1=grp, nperm=0, ranks=TRUE, cluster=clust,
+               permute.cluster=TRUE, nl=25, nr=25, expord=TRUE)
 
 summary(res1)
 
-# Plots statistics vs expected order statisics computed under the
+# Plots statistics vs expected order statistics computed under the
 #   permutation distribution for output from permax
 # del: if 'del>0', then lines with slope=1 and intercepts '+del' and
 #   '-del' will be added to the plot
@@ -108,8 +109,8 @@ plot.expord(x=res1,del=5)
 # no ranks ('rank=FALSE'), i.e. use T-statistic
 #####
 
-res11 <- permax(data=data1,ig1=grp,nperm=0, ranks=FALSE,cluster=clust,
-                permute.cluster=TRUE,nl=6,nr=23,expord=TRUE)
+res11 <- permax(data=data1, ig1=grp, nperm=0, ranks=FALSE, cluster=clust,
+                permute.cluster=TRUE, nl=6, nr=23,expord=TRUE)
 plot.expord(x=res11)
 
 
@@ -127,7 +128,7 @@ plot.expord(x=res11)
 # 'row.names=1' means the first column of the file 'data4signedrank.dat' is
 # row names.
 
-data2<-read.table("data4signedrank.dat", header=T, row.names=1)
+data2 <- read.table("data4signedrank.dat", header=T, row.names=1)
 
 # 'clust12' is a vector of cluster membership indicators for the columns 
 # of 'data2'
@@ -182,16 +183,16 @@ grp <- c(1:6,13:18)
 # X11 X21 X31 X41 X51 X61 Y11 Y21 Y31 Y41 Y51 Y61 X12 X22 X32 X42 X52 X62 
 # Y12 Y22 Y32 Y42 Y52 Y62
 # 
-# 'cluster' is specified, 'stratify=FALSE', 'permute.cluster=FALSE'
+# 'cluster' is specified, 'permute.cluster=FALSE'
 # statistics are computed as in the independence case, but columns are only
 # permuted within clusters, since under the null it is assumed that
 # columns from the same cluster are exchangeable, while columns from
 # different clusters may not be.
 
-res2.RS1 <- permax(data=data2,ig1=grp,nperm=0,min.np=0,logs=TRUE,
-                   ranks=TRUE, cluster=clust12,stratify=FALSE,signed.rank=FALSE,
-                   nl=38,nr=18, expord=TRUE, permute.cluster=FALSE)
-summary(object=res2.RS1,nl=38,nr=18)
+res2.RS1 <- permax(data=data2, ig1=grp, nperm=0, min.np=0, logs=TRUE,
+                   ranks=TRUE, cluster=clust12, signed.rank=FALSE,
+                   nl=38, nr=18, expord=TRUE, permute.cluster=FALSE)
+summary(res2.RS1,nl=38,nr=18)
 
 
 #####
@@ -213,7 +214,7 @@ summary(object=res2.RS1,nl=38,nr=18)
 # signed-rank test 
 #
 #
-# 'cluster' is specified, 'stratify=FALSE', 'permute.cluster=FALSE'
+# 'cluster' is specified, 'permute.cluster=FALSE'
 # statistics are computed as in the independence case, but columns are only
 # permuted within clusters, since under the null it is assumed that
 # columns from the same cluster are exchangeable, while columns from
@@ -221,10 +222,10 @@ summary(object=res2.RS1,nl=38,nr=18)
 #
 # 'signed.rank=TRUE' indicates to use signed rank test
 
-res2.ST <- permax(data=data2,ig1=grp,nperm=0,min.np=0,logs=TRUE,
-                  ranks=TRUE, cluster=clust12,stratify=FALSE,signed.rank=TRUE,
+res2.ST <- permax(data=data2, ig1=grp, nperm=0, min.np=0, logs=TRUE,
+                  ranks=TRUE, cluster=clust12, signed.rank=TRUE,
                   nl=34,nr=21, expord=TRUE, permute.cluster=FALSE)
-summary(object=res2.ST, nl=34, nr=21)
+summary(res2.ST, nl=34, nr=21)
 
 #####
 # RS2: The Generalized Ranksum Test (Separate Ranking of Two Sets of 12
@@ -280,9 +281,7 @@ dimnames(data3) <- dimnames(data2)
 # columns from the same cluster are exchangeable, while columns from
 # different clusters may not be.
 
-res2.RS2 <- permax(data=data3,ig1=grp,nperm=0,min.np=0,logs=FALSE,
-                   ranks=TRUE, cluster=clust12,stratify=FALSE,
-                   signed.rank=FALSE,nl=33,nr=18, expord=TRUE,
-                   permute.cluster=FALSE)
-
-summary(object=res2.RS2,nl=33,nr=18)
+res2.RS2 <- permax(data=data3, ig1=grp, nperm=0, min.np=0, logs=FALSE,
+                   ranks=TRUE, cluster=clust12, signed.rank=FALSE,
+                   nl=33, nr=18, expord=TRUE, permute.cluster=FALSE)
+summary(res2.RS2,nl=33,nr=18)
