@@ -11,7 +11,6 @@ This repository contains modernized R implementations of rank-analysis algorithm
 * `R/permax.R`: The core statistical engine containing the `permax()`, `perm_test()`, and `plot.expord()` functions.
 * `R/Rank_Analysis_of_Microarrays.R`: Higher-level wrapper functions and analysis pipelines dependent on the `permax` engine.
 * `data/`: Example datasets for demonstrating paired and stratified test configurations.
-* `examples/`: Sample scripts demonstrating how to execute various experimental designs (e.g., independent groups, repeated measures).
 
 ## Getting Started
 
