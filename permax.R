@@ -1,507 +1,864 @@
-### =======================================================================
-### FUNCTION: permax
-### Performs permutation-based differential expression analysis.
-### Handles exact and Monte Carlo permutations, with support for 
-### clustered (dependent) and stratified (blocked) experimental designs.
-### =======================================================================
-### 
-### INPUT:
-### data      : Data matrix; genes/markers in rows, samples in columns. 
-###             Gene codes used for matching should be in dimnames(data)[[1]].
-### ig1       : Numeric vector of column indices belonging to Group 1.
-### ig2       : (Optional) Numeric vector of column indices for Group 2. 
-###             If missing, all columns not in ig1 are assumed to be Group 2.
-### nperm     : Number of permutations. 
-###             <= 0: compute the exact, full permutation distribution.
-###             > 0:  compute nperm random Monte Carlo samples.
-### logs      : Logical. If TRUE, summary stats are computed from logs of data, 
-###             and logs are used in the t-statistics (if ranks=FALSE).
-### ranks     : Logical. If TRUE, ranks are used in the test statistics 
-###             (yielding a Wilcoxon/Rank-Sum test).
-### min.np    : Integer. Data is subset to only include rows with at least 
-###             'min.np' values > min(data) across the columns in ig1 and ig2.
-### WHseed    : Initial random number seed (integer vector). If missing, generated 
-###             from runif(). Not needed if exact permutations are calculated.
-### cluster   : Vector defining cluster memberships for samples. If specified, 
-###             samples in the same cluster are permuted together to preserve 
-###             within-cluster dependence (e.g., repeated measures on same mouse).
-### signed.rank : Logical. Used only if ranks=TRUE. If FALSE (default), performs 
-###               Wilcoxon Rank-Sum test. If TRUE, performs Wilcoxon Signed-Rank test.
-### stratify  : Vector defining strata/blocks. Permutations are strictly restricted 
-###             to occur WITHIN each stratum. Can be combined with 'cluster' 
-###             for nested hierarchical designs.
-### permute.cluster : Logical. If TRUE and 'cluster' is defined, permutes whole clusters.
-### nl        : Integer. Cutoff for the lower-tail False Discovery Rate (FDR). 
-###             Uses the nl'th most negative observed statistic as the critical threshold.
-### nr        : Integer. Cutoff for the upper-tail False Discovery Rate (FDR).
-###             Uses the nr'th most positive observed statistic as the critical threshold.
-### expord    : Logical. If TRUE, calculates the Expected Order Statistics across 
-###             permutations (used for generating Q-Q plots).
+# By R Gray, DFCI
+# Copyright (C) 2000, 2002 Robert Gray
+# Modified by Peizheng Chen, 2026
+
+### permax()
 ###
-### OUTPUT:
-### Returns a data.frame (class 'permax') with rows corresponding to surviving genes:
-###   stat    : The standardized test statistic (t-stat or rank-sum).
-###   pind    : Individual permutation p-values (2-sided).
-###   p2      : 2-sided Family-Wise Error Rate (FWER) using dist of max overall rows.
-###   p.lower : 1-sided p-value for lower expression in Group 1.
-###   p.upper : 1-sided p-value for higher expression in Group 1.
-###   nml     : Count of permutations where this row was the most significant for p.lower.
-###   nmr     : Count of permutations where this row was the most significant for p.upper.
-###   m1, m2  : Means of groups 1 and 2 (geometric means if logs=TRUE).
-###   s1, s2  : Standard deviations of groups 1 and 2 (of logs if logs=TRUE).
-###   np1, np2: Number of positive signals (> minimum value) in groups 1 and 2.
-###   mdiff   : Difference of means (difference of geometric means if logs=TRUE).
-###   mrat    : Ratio of means (ratio of geometric means if logs=TRUE).
+### Computes row-wise two-group permutation tests for microarray or similar
+### high-dimensional data. 
 ###
-### ATTRIBUTES ATTACHED TO OUTPUT (Access via attr(res, "attribute_name")):
-###   expected   : Vector of Expected Order Statistics for QQ-plots (if expord=TRUE).
-###   seed.start : The random seed used at the start of the permutations.
-###   seed.end   : The state of the random seed at the end of the permutations.
-###   fdr.lower  : Estimated Positive False Discovery Rate (pFDR) for the bottom 'nl' genes.
-###                (Expected false positives / Actual observed lower hits)
-###   fdr.upper  : Estimated Positive False Discovery Rate (pFDR) for the top 'nr' genes.
-###                (Expected false positives / Actual observed upper hits)
-### =======================================================================
+### Arguments
+###
+### data:
+###   Numeric matrix or data frame with markers/genes in rows and samples in
+###   columns. Marker identifiers used for matching and reporting should be in
+###   dimnames(data)[[1]].
+###
+### ig1:
+###   Column numbers belonging to group 1.
+###
+### nperm:
+###   nperm <= 0 computes the complete permutation distribution.
+###   nperm > 0 evaluates nperm random permutations.
+###
+### logs:
+###   If TRUE, nonpositive values are first replaced by 1 and the natural
+###   logarithm is applied. Summary statistics and non-rank test statistics
+###   are then computed from the logged data.
+###
+### ranks:
+###   If TRUE, observations within each row are replaced by ranks before the
+###   permutation statistic is calculated. This produces a generalized
+###   Wilcoxon rank-sum test. For a stratified analysis, ranking is performed
+###   separately within each stratum.
+###
+### min.np:
+###   Retains only rows having at least min.np observations greater than the
+###   overall minimum value of the analyzed data. The count is taken across
+###   the group 1 and group 2 columns.
+###
+### ig2:
+###   Optional column numbers belonging to group 2. If NULL, all columns not
+###   listed in ig1 are assigned to group 2. If supplied, columns outside ig1
+###   and ig2 are excluded, and min.np is evaluated only using ig1 and ig2.
+###
+### WHseed:
+###   Initial Wichmann-Hill random-number seed, supplied as a vector of three
+###   integers. If omitted for a random-permutation analysis, a seed is
+###   generated using runif(). It is not needed when the complete permutation
+###   distribution is calculated.
+###
+### cluster:
+###   Optional vector of cluster or stratum identifiers, with one identifier
+###   per sample column. When permute.cluster=FALSE, treatment assignments are
+###   permuted within clusters while preserving the original number of group 1
+###   observations in each cluster. When permute.cluster=TRUE, entire clusters
+###   are permuted between groups.
+###
+### stratify:
+###   If TRUE, computes a stratified statistic by combining within-cluster
+###   contributions. A cluster vector must be supplied. stratify=TRUE cannot
+###   be combined with permute.cluster=TRUE or signed.rank=TRUE.
+###
+### weights:
+###   Optional numeric vector containing one weight per cluster for a
+###   stratified analysis. If NULL, equal initial weights of 1/number of
+###   clusters are used. The weights are internally adjusted for the group
+###   allocation within each informative cluster.
+###
+### nl, nr:
+###   Numbers of markers used to define the lower- and upper-tail critical
+###   values. nl selects the lower-tail cutoff from the ordered observed
+###   statistics, and nr selects the corresponding upper-tail cutoff. These
+###   cutoffs are also used to summarize the permutation distribution of the
+###   number of tail-positive markers.
+###
+### permute.cluster:
+###   If TRUE, whole clusters rather than individual samples are permuted.
+###   Every cluster must belong entirely to one treatment group. This option
+###   cannot be combined with stratify=TRUE.
+###
+### signed.rank:
+###   If TRUE, performs a paired Wilcoxon signed-rank analysis. Every cluster
+###   must contain exactly two observations, normally one from each group.
+###   This option requires cluster and cannot be combined with stratify=TRUE.
+###
+### expord:
+###   If TRUE, calculates the expected ordered test statistics under the
+###   permutation distribution. They are returned in attr(result, "expected").
+###
+### Value
+###
+### Returns an object of class c("permax", "data.frame"), ordered from the
+### smallest to the largest observed test statistic, with the following
+### columns:
+###
+### stat:
+###   Observed test statistic.
+###
+### pind.lower:
+###   Individual, unadjusted lower-tail permutation p-value: the proportion
+###   of permutations with a statistic less than or equal to the observed
+###   statistic for that row.
+###
+### pind.upper:
+###   Individual, unadjusted upper-tail permutation p-value: the proportion
+###   of permutations with a statistic greater than or equal to the observed
+###   statistic for that row.
+###
+### p.lower:
+###   Multiplicity-adjusted, step-down lower-tail permutation p-value.
+###
+### p.upper:
+###   Multiplicity-adjusted, step-down upper-tail permutation p-value.
+###
+### m1, m2:
+###   Arithmetic means for groups 1 and 2. If logs=TRUE, these are means of
+###   the logged observations.
+###
+### s1, s2:
+###   Sample standard deviations for groups 1 and 2. If logs=TRUE, these are
+###   standard deviations of the logged observations.
+###
+### np1, np2:
+###   Numbers of observations in groups 1 and 2 that are greater than the
+###   overall minimum value of the analyzed data.
+###
+### mdiff:
+###   Difference between group means. If logs=TRUE, this is the difference
+###   between the two geometric means: exp(m1) - exp(m2).
+###
+### mrat:
+###   Ratio of group means. If logs=TRUE, this is the ratio of geometric
+###   means: exp(m1 - m2).
+###
+### Attributes
+###
+### attr(result, "dist"):
+###   Summary of the null permutation distributions for the numbers of
+###   lower- and upper-tail positive markers. It contains nl, prop.nl,
+###   prop.1l, ave.l, nr, prop.nr, prop.1r, and ave.r.
+###
+### attr(result, "expected"):
+###   Expected order statistics under the permutation distribution. Present
+###   only when expord=TRUE.
+###
+### attr(result, "seed.start"), attr(result, "seed.end"):
+###   Starting and ending random-number seeds. Present only when nperm > 0.
+###
+### attr(result, "call"):
+###   The matched call to permax().
 
 permax <- function(data, ig1, nperm=0, logs=TRUE, ranks=FALSE, min.np=1,
-                   ig2, WHseed=NULL, cluster=NULL, signed.rank=FALSE, stratify=NULL, 
-                   expord=FALSE, permute.cluster=TRUE, nl=25, nr=25, ...) {
-  
-  # DATA CLEANING AND REORDERING
+                   ig2=NULL, WHseed=NULL, cluster=NULL, stratify=FALSE,
+                   weights=NULL, nl=50, nr=50, permute.cluster=FALSE,
+                   signed.rank=FALSE, expord=FALSE) {
+  cl <- match.call()
   data <- as.matrix(data)
   if (logs) {
-    data[data<=0] <- 1
+    tmp <- data <= 0
+    if (any(tmp)) {
+      data[tmp] <- 1
+    }
     data <- log(data)
   }
+  
+  if (!is.null(ig2)) {
+    # Remove unused columns and adjust ig1
+    i2 <- ig1i <- rep(FALSE, ncol(data))
+    ig1i[ig1] <- TRUE
+    i2[c(ig1, ig2)] <- TRUE
+    data <- data[, i2]
+    if (!is.null(cluster)) {
+      cluster <- cluster[i2]
+    }
+    ig1 <- seq_len(ncol(data))[ig1i[i2]]
+  }
+  
   dmin <- min(data)
-  
-  if (missing(ig2)) {
-    # Splits data into [Group 1 | Everything Else] based on ig1
-    data_reordered <- cbind(data[,ig1], data[,-ig1])
-    # Reorder cluster/stratify to match the new column order
-    if(!is.null(cluster)) cluster <- c(cluster[ig1], cluster[-ig1])
-    if(!is.null(stratify)) stratify <- c(stratify[ig1], stratify[-ig1])
-    data <- data_reordered
-  } else {
-    data_reordered <- cbind(data[,ig1], data[,ig2])
-    if(!is.null(cluster)) cluster <- c(cluster[ig1], cluster[ig2])
-    if(!is.null(stratify)) stratify <- c(stratify[ig1], stratify[ig2])
-    data <- data_reordered
-  }
-  
-  # GET TRUE POSITIVE SIGNALS
   n1 <- length(ig1)
-  n2 <- ncol(data)-n1
-  ig1 <- 1:n1
+  n2 <- ncol(data) - n1
   
-  # Number of positive signals in the first group
-  d1 <- data[,ig1,drop=FALSE]
-  m1 <- c(d1 %*% rep(1/n1, n1))
-  s1 <- if(n1>1) c(sqrt((d1-m1)^2 %*% rep(1/(n1-1), n1))) else rep(0,nrow(d1))
-  d1[d1<=dmin] <- 0
-  d1[d1>dmin] <- 1
-  npos1 <- d1 %*% rep(1,n1)
-  
-  # Number of positive signals in the second group
-  d1 <- data[,-ig1,drop=FALSE]
-  m2 <- c(d1 %*% rep(1/n2,n2))
-  s2 <- if(n2>1) c(sqrt((d1-m2)^2 %*% rep(1/(n2-1),n2))) else rep(0,nrow(d1))
-  d1[d1<=dmin] <- 0
-  d1[d1>dmin] <- 1
-  npos2 <- d1 %*% rep(1,n2)
-  
-  # Filter true positive signals
-  sub <- npos1+npos2 >= min.np
-  data <- cbind(data[sub,ig1],data[sub,-ig1])
-  if (ranks) {
-    if (signed.rank && !is.null(cluster)) {
-      # Wilcoxon signed-rank
-      # 1. Identify the paired columns using the cluster IDs
-      unique_clusters <- unique(cluster)
-      col_ig1 <- numeric(length(unique_clusters))
-      col_ig2 <- numeric(length(unique_clusters))
-      
-      for(i in seq_along(unique_clusters)) {
-        c_id <- unique_clusters[i]
-        cols <- which(cluster == c_id)
-        # Because data was reordered above, Group 1 is columns 1 to n1
-        col_ig1[i] <- cols[cols <= n1]
-        col_ig2[i] <- cols[cols > n1]
-      }
-      
-      # 2. Calculate the differences (Group 1 - Group 2)
-      diffs <- data[, col_ig1, drop=FALSE] - data[, col_ig2, drop=FALSE]
-      
-      # 3. Calculate Signed Ranks across the differences
-      signed_ranks <- t(apply(diffs, 1, function(x) sign(x) * rank(abs(x))))
-      
-      # 4. Create the Mirror Matrix for the permutation engine!
-      data[, col_ig1] <- signed_ranks
-      data[, col_ig2] <- -signed_ranks
-      
-    }
-    else {
-      # Wilcoxon rank-sum
-      data <- t(apply(data,1,rank))
-    }
-  }
-  
-  # Calculate number of permutation (by observation/cluster) and specify the WHseed
-  if (nperm <= 0) {
-    if (!is.null(stratify)) {
-      # 1. STRATIFIED MATH
-      nn <- 1
-      for (s in unique(stratify)) {
-        idx <- which(stratify == s)
-        if (!is.null(cluster) && permute.cluster) {
-          mk <- length(unique(cluster[idx]))
-          n1k <- length(unique(cluster[intersect(ig1, idx)]))
-        } else {
-          mk <- length(idx)
-          n1k <- length(intersect(ig1, idx))
-        }
-        nn <- nn * exp(lchoose(mk, n1k))
-      }
-    } else if (!is.null(cluster) && !permute.cluster) {
-      # 2. PERMUTE WITHIN CLUSTERS (Paired Design)
-      nn <- 1
-      for (c_id in unique(cluster)) {
-        idx <- which(cluster == c_id)
-        n1k <- length(intersect(ig1, idx))
-        nn <- nn * exp(lchoose(length(idx), n1k))
-      }
-    } else if (!is.null(cluster) && permute.cluster) {
-      # 3. CLUSTERED MATH (Permute whole clusters)
-      n_clust_total <- length(unique(cluster))
-      n_clust_g1 <- length(unique(cluster[ig1]))
-      nn <- exp(lchoose(n_clust_total, n_clust_g1)) 
-    } else {
-      # 4. STANDARD MATH
-      nn <- exp(lchoose(n1+n2, n1))
-    }
-    
-    cat('statistics will be computed for all', format(round(nn)), 'groupings\n')
-    nperm <- round(nn)
-    WHseed <- c(0,0,0)
-    
-  } else if (is.null(WHseed)) {
-    WHseed <- floor(30000*runif(3)) + 1
-  }
-  
-  # PERFORM PERMUTATION TEST
-  Z_list <- perm_test(data = data, ig1 = ig1, nperm = nperm, seed = WHseed, 
-                      cluster = cluster, stratify = stratify, expord = expord, 
-                      permute_cluster = permute.cluster)
-  
-  # COMPUTE ACTUAL FDR RATES
-  crit_lower <- sort(Z_list$stat)[nl]
-  crit_upper <- sort(Z_list$stat, decreasing = TRUE)[nr]
-  obs_hits_lower <- sum(Z_list$stat <= crit_lower)
-  obs_hits_upper <- sum(Z_list$stat >= crit_upper)
-  fdr_lower <- if (obs_hits_lower > 0) mean(Z_list$fdr.lower.counts) / obs_hits_lower else NA
-  fdr_upper <- if (obs_hits_upper > 0) mean(Z_list$fdr.upper.counts) / obs_hits_upper else NA
-  
-  if (nperm>0) endseed <- Z_list$ix
-  Z <- data.frame(stat=Z_list$stat,pind=Z_list$pind/nperm,p2=Z_list$p2/nperm,
-                  p.lower=Z_list$p.lower/nperm,p.upper=Z_list$p.upper/nperm,
-                  nml=Z_list$nml,nmr=Z_list$nmr)
-  
-  # PROCESS OUTPUT TABLE
-  # Append descriptive statistics
-  if (logs){
-    Z <- cbind(Z,m1=m1[sub],m2=m2[sub],s1=s1[sub],s2=s2[sub],np1=npos1[sub],
-               np2=npos2[sub],mdiff=exp(m1[sub])-exp(m2[sub]),mrat=exp(m1[sub]-m2[sub]))
+  # Descriptive statistics are calculated before filtering and before the
+  # permutation-specific transformations.
+  d1 <- data[, ig1, drop=FALSE]
+  if (n1 > 1L) {
+    m1 <- c(d1 %*% rep(1 / n1, n1))
+    s1 <- sqrt((d1 - m1)^2 %*% rep(1 / (n1 - 1L), n1))
+    d1[d1 <= dmin] <- 0
+    d1[d1 > dmin] <- 1
+    npos1 <- d1 %*% rep(1, n1)
   } else {
-    Z <- cbind(Z,m1=m1[sub],m2=m2[sub],s1=s1[sub],s2=s2[sub],np1=npos1[sub],
-               np2=npos2[sub],mdiff=m1[sub]-m2[sub],mrat=m1[sub]/m2[sub])
+    m1 <- c(d1)
+    s1 <- rep(0, length(d1))
+    npos1 <- ifelse(d1 > dmin, 1, 0)
   }
   
-  row.names(Z) <- dimnames(data)[[1]]
-  class(Z) <- c('permax','data.frame')
+  d1 <- data[, -ig1, drop=FALSE]
+  m2 <- c(d1 %*% rep(1 / n2, n2))
+  s2 <- if (n2 > 1L) {
+    sqrt((d1 - m2)^2 %*% rep(1 / (n2 - 1L), n2))
+  } else {
+    rep(0, nrow(d1))
+  }
+  d1[d1 <= dmin] <- 0
+  d1[d1 > dmin] <- 1
+  npos2 <- d1 %*% rep(1, n2)
   
-  if (expord) attr(Z, 'expected') <- Z_list$expord
+  sub <- npos1 + npos2 >= min.np
+  data <- data[sub, ]
+  n <- nrow(data)
+  
+  if (!is.null(cluster)) {
+    trt <- rep(2, n1 + n2)
+    trt[ig1] <- 1
+    mclust <- table(cluster)
+    nclust <- length(mclust)
+    mct1 <- table(cluster, trt)[, 1]
+    
+    if (permute.cluster) {
+      if (stratify) {
+        stop("permute.cluster and stratify cannot both == TRUE")
+      }
+      if (any(mclust != mct1 & mct1 != 0)) {
+        stop("clusters cannot contain both groups when permute.cluster==TRUE")
+      }
+      ipc <- 1L
+      o <- order(trt, cluster)
+    } else {
+      ipc <- 0L
+      o <- order(cluster, trt)
+    }
+    
+    data <- data[, o]
+    trt <- trt[o]
+    ig1 <- seq_len(ncol(data))[trt == 1]
+    
+    if (stratify) {
+      istrt <- 1L
+      if (is.null(weights)) {
+        weights <- rep(1, nclust) / nclust
+      } else if (length(weights) != nclust) {
+        stop(paste("weights must have length", format(nclust)))
+      }
+    } else {
+      istrt <- 0L
+    }
+    
+    if (signed.rank) {
+      if (max(mclust) != 2L || min(mclust) != 2L) {
+        stop("signed.rank requires paired data")
+      }
+      if (stratify) {
+        stop("stratify and signed.rank cannot both = TRUE")
+      }
+      
+      d1 <- data[, ig1] - data[, -ig1]
+      d2 <- t(apply(abs(d1), 1, rank))
+      d2[d1 == 0] <- 0
+      d2 <- ifelse(d1 < 0, -d2, d2)
+      data[, ig1] <- d2
+      data[, -ig1] <- -d2
+      irnk <- 2L
+    }
+  } else {
+    data <- cbind(data[, ig1], data[, -ig1])
+    ig1 <- seq_len(n1)
+    nclust <- 1L
+    mclust <- n1 + n2
+    mct1 <- n1
+    istrt <- 0L
+    ipc <- 0L
+  }
+  
+  if (!signed.rank) {
+    if (ranks) {
+      if (istrt == 1L) {
+        t1 <- c(0, cumsum(mclust))
+        for (i in seq_len(nclust)) {
+          ii <- (t1[i] + 1L):t1[i + 1L]
+          data[, ii] <- t(apply(data[, ii, drop=FALSE], 1, rank))
+        }
+      } else {
+        data <- t(apply(data, 1, rank))
+      }
+      irnk <- 1L
+    } else {
+      irnk <- 0L
+    }
+  }
+  
   if (nperm > 0) {
-    attr(Z, 'seed.start') <- WHseed
-    attr(Z, 'seed.end') <- endseed
+    if (is.null(WHseed)) {
+      WHseed <- floor(30000 * runif(3)) + 1
+    }
+  } else {
+    WHseed <- c(0, 0, 0)
+    
+    if (ipc == 1L) {
+      nct1 <- sum(as.numeric(mct1 > 0))
+      nn <- exp(sum(log(2:nclust)) - sum(log(2:nct1)) - sum(log(2:(nclust - nct1))))
+    } else {
+      nn <- 0
+      for (i in seq_len(nclust)) {
+        if (mclust[i] > mct1[i] && mct1[i] > 0) {
+          nn <- nn + sum(log(1:mclust[i])) - sum(log(1:mct1[i])) - sum(log(1:(mclust[i] - mct1[i])))
+        }
+      }
+      nn <- exp(nn)
+    }
+    
+    cat("statistics will be computed for all", format(nn), "combinations\n")
   }
-  attr(Z, 'fdr.lower') <- fdr_lower
-  attr(Z, 'fdr.upper') <- fdr_upper
   
-  return(Z)
+  Z <- ptnstd(data=data, ng1=n1, nclust=nclust, mclust=mclust,mct1=mct1, ig1=ig1, 
+              irnk=irnk, stratified=istrt, weights=weights, permute_cluster=ipc)
+  
+  Z2 <- Z$stat
+  weights <- Z$weights
+  data <- matrix(Z$d, nrow=n, dimnames=dimnames(data))
+  
+  o <- order(Z2)
+  Z2 <- Z2[o]
+  
+  if (nl > n) {
+    nl <- round(n / 2)
+  }
+  if (nr > n) {
+    nr <- round(n / 2)
+  }
+  
+  crit <- c(Z2[nl], Z2[n - nr + 1L])
+  data <- data[o, ]
+  
+  use_t_statistic <- !ranks && !stratify && !signed.rank
+  
+  permutation <- ptn(data=data, ng1=n1, stat=Z2, nperm=nperm, seed=WHseed,
+                     nclust=nclust, mclust=mclust, mct1=mct1,ig1=c(ig1, rep(0, n2)),
+                     irnk=irnk, stratified=istrt, weights=weights, nlr=c(nl, nr),
+                     crit=crit, permute_cluster=ipc, expord=expord,
+                     expected_statistic=if (use_t_statistic) "t" else "sum")
+  
+  if (nperm > 0) {
+    endseed <- permutation$ix
+  }
+  
+  if (use_t_statistic) {
+    Z2 <- tst2(cbind(data[, ig1], data[, -ig1]), ng1=n1, ng2=n2)
+  }
+  
+  dist <- c(nl, permutation$dist[1:3],
+            nr, permutation$dist[4:6])
+  names(dist) <- c("nl", "prop.nl", "prop.1l", "ave.l",
+                   "nr", "prop.nr", "prop.1r", "ave.r")
+  
+  Z <- data.frame(stat=Z2,
+                  pind.lower=permutation$pind.lower / permutation$nperm,
+                  pind.upper=permutation$pind.upper / permutation$nperm,
+                  p.lower=permutation$p.lower / permutation$nperm,
+                  p.upper=permutation$p.upper / permutation$nperm)
+  
+  m1 <- m1[sub]
+  m2 <- m2[sub]
+  
+  if (logs) {
+    d1 <- data.frame(m1=m1, m2=m2, s1=s1[sub], s2=s2[sub],
+                     np1=npos1[sub], np2=npos2[sub],
+                     mdiff=exp(m1) - exp(m2), mrat=exp(m1 - m2))
+  } else {
+    d1 <- data.frame(m1=m1, m2=m2, s1=s1[sub], s2=s2[sub],
+                     np1=npos1[sub], np2=npos2[sub],
+                     mdiff=m1 - m2, mrat=m1 / m2)
+  }
+  
+  Z <- cbind(Z, d1[o, ])
+  row.names(Z) <- dimnames(data)[[1]]
+  class(Z) <- c("permax", "data.frame")
+  attr(Z, "dist") <- dist
+  attr(Z, "call") <- cl
+  
+  if (expord) {
+    attr(Z, "expected") <- permutation$expected
+  }
+  
+  if (nperm > 0) {
+    attr(Z, "seed.start") <- WHseed
+    attr(Z, "seed.end") <- endseed
+  }
+  
+  Z
 }
 
-perm_test <- function(data, ig1, nperm, seed, 
-                      cluster=NULL, stratify=NULL, expord=FALSE,
-                      permute_cluster=TRUE, nl=25, nr=25) {
+ptnstd <- function(data, ng1, nclust, mclust, mct1, ig1,
+                   irnk, stratified, weights, permute_cluster) {
+  data <- as.matrix(data)
+  ng1 <- as.integer(ng1)
+  nclust <- as.integer(nclust)
+  mclust <- as.integer(mclust)
+  mct1 <- as.integer(mct1)
+  ig1 <- as.integer(ig1)
+  irnk <- as.integer(irnk)
+  stratified <- isTRUE(as.logical(stratified))
+  invisible(permute_cluster)
   
-  # SETUP
-  n_genes <- nrow(data)
-  n_samples <- ncol(data)
-  n1 <- length(ig1)
-  
-  if (!is.null(seed)) set.seed(seed[1])
-  
-  # STANDARDIZE DATA
-  data_std <- matrix(0, nrow = n_genes, ncol = n_samples)
-  data_std_weighted <- matrix(0, nrow = n_genes, ncol = n_samples) # Optimization matrix
-  obs_sum <- numeric(n_genes)
-  
-  if (!is.null(stratify)) {
-    # Standardize WITHIN each stratum and calculate weighted statistic
-    unique_strata <- unique(stratify)
-    K <- length(unique_strata) # Total number of strata
-    
-    for (s in unique_strata) {
-      idx <- which(stratify == s)
-      stratum_data <- data[, idx, drop=FALSE]
-      
-      # Standardize within stratum
-      stratum_means <- rowMeans(stratum_data)
-      stratum_sds <- apply(stratum_data, 1, sd)
-      stratum_sds[stratum_sds == 0] <- 1
-      data_std[, idx] <- (stratum_data - stratum_means) / stratum_sds
-      
-      # Stratified Math: (1/K) * [m_k / (n1k * n2k)] * sum(Group 1 in stratum)
-      ig1_in_stratum <- intersect(ig1, idx)
-      n1k <- length(ig1_in_stratum)
-      mk <- length(idx)
-      n2k <- mk - n1k
-      
-      if (n1k > 0 && n2k > 0) {
-        stratum_multiplier <- (1/K) * (mk / (n1k * n2k))
-        sum_group1 <- rowSums(data_std[, ig1_in_stratum, drop=FALSE])
-        obs_sum <- obs_sum + (stratum_multiplier * sum_group1)
-        
-        data_std_weighted[, idx] <- data_std[, idx] * stratum_multiplier # Optimization matrix
-      }
-    }
+  if (is.null(weights)) {
+    weights_out <- numeric(0)
   } else {
-    # Standardize GLOBALLY
-    row_means <- rowMeans(data)
-    row_sds <- apply(data, 1, sd)
-    row_sds[row_sds == 0] <- 1 
-    data_std <- (data - row_means) / row_sds
-    
-    obs_sum <- rowSums(data_std[, ig1, drop=FALSE])
-    data_std_weighted <- data_std
+    weights_out <- as.numeric(weights)
   }
   
-  # FDR cutoff
-  crit_lower <- sort(obs_sum)[nl]
-  crit_upper <- sort(obs_sum, decreasing = TRUE)[nr]
-  perm_lower_counts <- numeric(nperm)
-  perm_upper_counts <- numeric(nperm)
-  
-  # STRATIFY and CLUSTER SETUP
-  if (!is.null(stratify)) {
-    exact_nperm <- 1
-    for (s in unique_strata) {
-      idx <- which(stratify == s)
+  standardize_block <- function(columns, center_only) {
+    if (length(columns) == 0L) {
+      return(invisible(NULL))
+    }
+    
+    block <- data[, columns, drop=FALSE]
+    
+    for (i in seq_len(nrow(block))) {
+      values <- block[i, ]
+      value_mean <- sum(values) / length(values)
       
-      if (!is.null(cluster) && permute_cluster) {
-        # STRATIFIED and CLUSTERED: Count unique CLUSTERS within this stratum
-        mk <- length(unique(cluster[idx]))
-        n1k <- length(unique(cluster[intersect(ig1, idx)]))
+      if (center_only) {
+        block[i, ] <- values - value_mean
       } else {
-        # STRATIFIED only: Count raw columns
-        mk <- length(idx)
-        n1k <- length(intersect(ig1, idx))
+        value_ss <- sum((values - value_mean)^2)
+        value_sd <- sqrt(value_ss / (length(values) - 1L))
+        
+        # stdmv leaves a zero-variance row unchanged.
+        if (isTRUE(value_sd > 0)) {
+          block[i, ] <- (values - value_mean) / value_sd
+        }
       }
-      exact_nperm <- exact_nperm * exp(lchoose(mk, n1k))
     }
     
-  } else if (!is.null(cluster) && !permute_cluster) {
-    # PAIRED design: 2^N
-    exact_nperm <- 1 
-    for (c_id in unique(cluster)) {
-      idx <- which(cluster == c_id)
-      exact_nperm <- exact_nperm * exp(lchoose(length(idx), length(intersect(ig1, idx))))
-    }
-  } else if (!is.null(cluster) && permute_cluster) {
-    # CLUSTERED ONLY
-    exact_nperm <- exp(lchoose(length(unique(cluster)), length(unique(cluster[ig1]))))
-  } else {
-    # STANDARD
-    exact_nperm <- exp(lchoose(n_samples, n1))
+    data[, columns] <<- block
+    invisible(NULL)
   }
   
-  is_exact <- (round(nperm) == round(exact_nperm))
+  if (stratified) {
+    if (length(weights_out) != nclust) {
+      stop("weights must have one value per cluster for a stratified test")
+    }
+    
+    column_offset <- 0L
+    
+    for (j in seq_len(nclust)) {
+      columns <- column_offset + seq_len(mclust[j])
+      
+      if (mct1[j] > 0L && mct1[j] < mclust[j]) {
+        weights_out[j] <- weights_out[j] * mclust[j] /
+          (mct1[j] * (mclust[j] - mct1[j]))
+      } else {
+        weights_out[j] <- 0
+      }
+      
+      if (irnk == 1L) {
+        standardize_block(columns, center_only=TRUE)
+      } else if (irnk != 2L) {
+        standardize_block(columns, center_only=FALSE)
+      }
+      
+      column_offset <- column_offset + mclust[j]
+    }
+  } else {
+    if (irnk == 1L) {
+      standardize_block(seq_len(ncol(data)), center_only=TRUE)
+    } else if (irnk != 2L) {
+      standardize_block(seq_len(ncol(data)), center_only=FALSE)
+    }
+  }
+  
+  stat <- tsum(data=data,
+               ig1=ig1[seq_len(ng1)],
+               stratified=stratified,
+               mclust=mclust,
+               mct1=mct1,
+               weights=weights_out)
+  
+  list(d=data, stat=stat, weights=weights_out)
+}
 
-  # Initialize counters
-  count_pind <- numeric(n_genes)
-  count_p2 <- numeric(n_genes)
-  count_lower <- numeric(n_genes)
-  count_upper <- numeric(n_genes)
-  count_nml <- numeric(n_genes)
-  count_nmr <- numeric(n_genes)
-  max_stats_dist <- numeric(nperm)
-  if (expord) sum_ordered_stats <- numeric(n_genes) else sum_ordered_stats <- NULL
+# The data matrix is assumed to have already been standardized by ptnstd().
+tsum <- function(data, ig1, stratified, mclust, mct1, weights) {
+  if (!stratified) {
+    return(rowSums(data[, ig1, drop=FALSE]))
+  }
   
-  # GENERATE PERMUTATION INDICES
-  if (is_exact) {
-    if (!is.null(stratify)) {
-      # 1. STRATIFIED EXACT (Nested or Pure)
-      stratum_combos_list <- list()
-      
-      for (s in unique(stratify)) {
-        idx <- which(stratify == s)
-        
-        if (!is.null(cluster) && permute_cluster) {
-          # STRATIFIED and CLUSTERED: Clusters within Stratum
-          stratum_clusters <- unique(cluster[idx])
-          g1_clusters <- unique(cluster[intersect(ig1, idx)])
-          n1k <- length(g1_clusters)
-          stratum_combos_list[[as.character(s)]] <- combn(stratum_clusters, n1k, simplify = FALSE)
-        } else {
-          # STRATIFIED only: Raw columns within Stratum
-          n1k <- length(intersect(ig1, idx))
-          stratum_combos_list[[as.character(s)]] <- combn(idx, n1k, simplify = FALSE)
-        }
-      }
-      # Cross all strata to get every valid full-sample permutation
-      grid_indices <- expand.grid(lapply(stratum_combos_list, seq_along))
-      all_combos <- apply(grid_indices, 1, function(row_idx) {
-        unlist(mapply(function(lst, i) lst[[i]], stratum_combos_list, row_idx, SIMPLIFY = FALSE))
-      })
-      
-    } else if (!is.null(cluster) && !permute_cluster) {
-      cluster_combos_list <- list()
-      for (c_id in unique(cluster)) {
-        idx <- which(cluster == c_id)
-        n1k <- length(intersect(ig1, idx))
-        cluster_combos_list[[as.character(c_id)]] <- combn(idx, n1k, simplify = FALSE)
-      }
-      grid_indices <- expand.grid(lapply(cluster_combos_list, seq_along))
-      all_combos <- apply(grid_indices, 1, function(row_idx) {
-        unlist(mapply(function(lst, i) lst[[i]], cluster_combos_list, row_idx, SIMPLIFY = FALSE))
-      })
-    } else if (!is.null(cluster) && permute_cluster) {
-      # 2. CLUSTERED EXACT (No Strata)
-      all_combos <- combn(unique(cluster), length(unique(cluster[ig1])))
-      
+  ans <- numeric(nrow(data))
+  group_offset <- 0L
+  
+  for (j in seq_along(mclust)) {
+    number_group1 <- mct1[j]
+    
+    if (number_group1 > 0L && number_group1 < mclust[j]) {
+      selected <- group_offset + seq_len(number_group1)
+      ans <- ans + weights[j] * rowSums(data[, ig1[selected], drop=FALSE])
+    }
+    
+    group_offset <- group_offset + number_group1
+  }
+  
+  ans
+}
+
+tst2 <- function(data, ng1, ng2=ncol(data) - ng1) {
+  data <- as.matrix(data)
+  ng1 <- as.integer(ng1)
+  ng2 <- as.integer(ng2)
+  ans <- numeric(nrow(data))
+  
+  group1_columns <- seq_len(ng1)
+  group2_columns <- ng1 + seq_len(ng2)
+  
+  for (j in seq_len(nrow(data))) {
+    group1 <- data[j, group1_columns]
+    group2 <- data[j, group2_columns]
+    
+    mean1 <- sum(group1) / ng1
+    mean2 <- sum(group2) / ng2
+    ss1 <- sum((group1 - mean1)^2)
+    ss2 <- sum((group2 - mean2)^2)
+    
+    if (ss1 == 0 && ss2 == 0) {
+      ans[j] <- 0
     } else {
-      # 3. STANDARD EXACT
-      all_combos <- combn(1:n_samples, n1)
+      ans[j] <- (mean1 - mean2) / sqrt((1 / ng1 + 1 / ng2) * (ss1 + ss2) / (ng1 + ng2 - 2L))
     }
   }
   
-  # PERMUTATION LOOP
-  for (i in 1:nperm) {
-    
-    # STEP 1: GET PERMUTATION INDICES
-    if (is_exact) {
-      # Deterministic: USE the pre-calculated combination
-      curr_perm_idx <- all_combos[, i]
-      
-      # If clustered, convert cluster IDs back to actual column indices
-      if (!is.null(cluster) && permute_cluster) {
-        curr_perm_idx <- which(cluster %in% curr_perm_idx)
-      }
+  ans
+}
+
+ptn <- function(data, ng1, stat, nperm, seed, nclust, mclust, mct1, ig1,
+                irnk, stratified, weights,nlr, crit, permute_cluster,
+                expord=FALSE, expected_statistic=c("sum", "t")) {
+  data <- as.matrix(data)
+  stat <- as.numeric(stat)
+  crit <- as.numeric(crit)
+  ng1 <- as.integer(ng1)
+  nperm_requested <- as.integer(nperm)
+  seed_state <- as.integer(seed)
+  nclust <- as.integer(nclust)
+  mclust <- as.integer(mclust)
+  mct1 <- as.integer(mct1)
+  current_group1 <- as.integer(ig1[seq_len(ng1)])
+  irnk <- as.integer(irnk)
+  stratified <- isTRUE(as.logical(stratified))
+  permute_cluster <- isTRUE(as.logical(permute_cluster))
+  nlr <- as.integer(nlr)
+  expected_statistic <- match.arg(expected_statistic)
+  invisible(irnk)
+  
+  number_genes <- nrow(data)
+  number_samples <- ncol(data)
+  exhaustive <- nperm_requested <= 0L
+  
+  lower_individual <- if (exhaustive) {
+    rep(1, number_genes)
+  } else {
+    numeric(number_genes)
+  }
+  upper_individual <- if (exhaustive) {
+    rep(1, number_genes)
+  } else {
+    numeric(number_genes)
+  }
+  lower_multiple <- if (exhaustive) {
+    rep(1, number_genes)
+  } else {
+    numeric(number_genes)
+  }
+  upper_multiple <- if (exhaustive) {
+    rep(1, number_genes)
+  } else {
+    numeric(number_genes)
+  }
+  
+  if (exhaustive) {
+    dist_counts <- c(1, 1, nlr[1L], 1, 1, nlr[2L])
+    number_evaluated <- 1L
+  } else {
+    dist_counts <- numeric(6L)
+    number_evaluated <- 0L
+  }
+  
+  expected_sum <- if (expord) numeric(number_genes) else NULL
+  
+  if (exhaustive && expord) {
+    if (expected_statistic == "sum") {
+      observed_for_expected <- stat
     } else {
-      # Random: Build a restricted shuffle on the fly
-      curr_perm_idx <- integer(0)
-      
-      if (!is.null(stratify)) {
-        # 1. STRATIFIED RANDOM
-        for (s in unique_strata) {
-          idx <- which(stratify == s)
-          
-          if (!is.null(cluster) && permute_cluster) {
-            # STRATIFIED and CLUSTERED: Sample clusters within this stratum
-            stratum_clusters <- unique(cluster[idx])
-            n1k <- length(unique(cluster[intersect(ig1, idx)]))
-            
-            if (length(stratum_clusters) == 1) {
-              sampled_clusters <- stratum_clusters
-            } else {
-              sampled_clusters <- sample(stratum_clusters, n1k)
-            }
-            curr_perm_idx <- c(curr_perm_idx, idx[cluster[idx] %in% sampled_clusters])
-            
-          } else {
-            # STRATIFIED only: Sample columns within this stratum
-            n1k <- length(intersect(ig1, idx))
-            
-            if (length(idx) == 1) {
-              sampled_cols <- idx
-            } else {
-              sampled_cols <- sample(idx, n1k)
-            }
-            curr_perm_idx <- c(curr_perm_idx, sampled_cols)
-          }
-        }
-      } else if (!is.null(cluster) && !permute_cluster) {
-          # Random sampler for Paired Design
-          for (c_id in unique(cluster)) {
-            idx <- which(cluster == c_id)
-            n1k <- length(intersect(ig1, idx))
-            sampled_cols <- if(length(idx)==1) idx else sample(idx, n1k)
-            curr_perm_idx <- c(curr_perm_idx, sampled_cols)
-          }
-        } else if (!is.null(cluster) && permute_cluster) {
-        # 2. CLUSTERED RANDOM (No Strata)
-        n_c1 <- length(unique(cluster[ig1]))
-        unique_clusters <- unique(cluster)
-        
-        if (length(unique_clusters) == 1) {
-          sampled_clusters <- unique_clusters
-        } else {
-          sampled_clusters <- sample(unique_clusters, n_c1)
-        }
-        curr_perm_idx <- which(cluster %in% sampled_clusters)
-        
+      observed_group2 <- setdiff(seq_len(number_samples), current_group1)
+      observed_for_expected <- tst2(cbind(data[, current_group1, drop=FALSE],
+                                          data[, observed_group2, drop=FALSE]),
+                                    ng1=length(current_group1), 
+                                    ng2=length(observed_group2))
+    }
+    expected_sum <- expected_sum + sort(observed_for_expected)
+  }
+  
+  process_grouping <- function(group1) {
+    permutation_stat <- tsum(
+      data=data,
+      ig1=group1,
+      stratified=stratified,
+      mclust=mclust,
+      mct1=mct1,
+      weights=weights
+    )
+    
+    lower_individual <<- lower_individual + (permutation_stat <= stat)
+    upper_individual <<- upper_individual + (permutation_stat >= stat)
+    
+    lower_hits <- sum(permutation_stat <= crit[1L])
+    upper_hits <- sum(permutation_stat >= crit[2L])
+    
+    running_maximum <- stat[1L] - 1
+    for (i in seq_len(number_genes)) {
+      running_maximum <- max(permutation_stat[i], running_maximum)
+      if (running_maximum >= stat[i]) {
+        upper_multiple[i] <<- upper_multiple[i] + 1
+      }
+    }
+    
+    running_minimum <- stat[number_genes] + 1
+    for (i in seq.int(number_genes, 1L, by=-1L)) {
+      running_minimum <- min(permutation_stat[i], running_minimum)
+      if (running_minimum <= stat[i]) {
+        lower_multiple[i] <<- lower_multiple[i] + 1
+      }
+    }
+    
+    dist_counts[1L] <<- dist_counts[1L] + (lower_hits >= nlr[1L])
+    dist_counts[2L] <<- dist_counts[2L] + (lower_hits >= 1L)
+    dist_counts[3L] <<- dist_counts[3L] + lower_hits
+    dist_counts[4L] <<- dist_counts[4L] + (upper_hits >= nlr[2L])
+    dist_counts[5L] <<- dist_counts[5L] + (upper_hits >= 1L)
+    dist_counts[6L] <<- dist_counts[6L] + upper_hits
+    
+    if (expord) {
+      if (expected_statistic == "sum") {
+        expected_values <- permutation_stat
       } else {
-        # 3. STANDARD RANDOM
-        if (n_samples == 1) {
-          curr_perm_idx <- 1
-        } else {
-          curr_perm_idx <- sample(1:n_samples, n1)
-        }
+        group2 <- setdiff(seq_len(number_samples), group1)
+        expected_values <- tst2(cbind(data[, group1, drop=FALSE],
+                                      data[, group2, drop=FALSE]),
+                                ng1=length(group1), 
+                                ng2=length(group2))
       }
+      expected_sum <<- expected_sum + sort(expected_values)
     }
     
-    # STEP 2: CALCULATE FAKE STATISTIC
-    perm_sum <- rowSums(data_std_weighted[, curr_perm_idx, drop=FALSE])
-    perm_lower_counts[i] <- sum(perm_sum <= crit_lower)
-    perm_upper_counts[i] <- sum(perm_sum >= crit_upper)
-    
-    # === STEP 3: TALLY THE SCOREBOARDS ===
-    abs_obs <- abs(obs_sum)
-    abs_perm <- abs(perm_sum)
-    
-    # Individual P-value tallies (two-sided)
-    count_pind <- count_pind + (abs_perm >= abs_obs)
-    
-    # Track the maximum statistic for the Westfall-Young FWER correction
-    max_perm_stat <- max(abs_perm)
-    max_stats_dist[i] <- max_perm_stat
-    
-    # One-sided tallies
-    count_lower <- count_lower + (perm_sum <= obs_sum)
-    count_upper <- count_upper + (perm_sum >= obs_sum)
-    
-    # Track which genes achieved the absolute maximum score across the whole matrix
-    is_max <- (abs_perm == max_perm_stat)
-    count_nml <- count_nml + (is_max & (perm_sum < 0)) 
-    count_nmr <- count_nmr + (is_max & (perm_sum > 0))
-    
-    # Build Expected Order QQ-Plot Data
-    if (expord) sum_ordered_stats <- sum_ordered_stats + sort(perm_sum, decreasing = FALSE)
+    number_evaluated <<- number_evaluated + 1L
+    invisible(NULL)
   }
   
-  # CALCULATE FAMILY-WISE ERROR RATE
-  for (g in 1:n_genes) {
-    count_p2[g] <- sum(max_stats_dist >= abs(obs_sum[g]))
+  if (exhaustive) {
+    if (permute_cluster) {
+      selected_clusters <- which(mct1 > 0L)
+      
+      repeat {
+        number_selected <- length(selected_clusters)
+        combination_exhausted <- FALSE
+        
+        if (number_selected == 0L) {
+          combination_exhausted <- TRUE
+        } else if (selected_clusters[number_selected] < nclust) {
+          selected_clusters[number_selected] <-
+            selected_clusters[number_selected] + 1L
+        } else {
+          advanced_position <- 0L
+          
+          if (number_selected > 1L) {
+            for (j in seq.int(number_selected - 1L, 1L, by=-1L)) {
+              if (selected_clusters[j] < nclust - number_selected + j) {
+                advanced_position <- j
+                break
+              }
+            }
+          }
+          
+          if (advanced_position > 0L) {
+            selected_clusters[advanced_position] <-
+              selected_clusters[advanced_position] + 1L
+            if (advanced_position < number_selected) {
+              for (k in seq.int(advanced_position + 1L, number_selected)) {
+                selected_clusters[k] <- selected_clusters[k - 1L] + 1L
+              }
+            }
+          } else {
+            selected_clusters <- seq_len(number_selected)
+            combination_exhausted <- TRUE
+          }
+        }
+        
+        cluster_starts <- c(0L, cumsum(mclust))[selected_clusters] + 1L
+        current_group1 <- integer(0)
+        for (j in seq_along(selected_clusters)) {
+          current_group1 <- c(
+            current_group1,
+            cluster_starts[j] + seq_len(mclust[selected_clusters[j]]) - 1L
+          )
+        }
+        
+        if (combination_exhausted) {
+          break
+        }
+        
+        process_grouping(current_group1)
+      }
+    } else {
+      repeat {
+        data_offset <- 0L
+        group_offset <- 0L
+        grouping_available <- FALSE
+        
+        # Advance the product of the within-cluster combination spaces.  The
+        # first cluster changes fastest.
+        for (j in seq_len(nclust)) {
+          number_selected <- mct1[j]
+          positions <- if (number_selected > 0L) {
+            group_offset + seq_len(number_selected)
+          } else {
+            integer(0)
+          }
+          
+          cluster_index <- current_group1[positions]
+          cluster_maximum <- data_offset + mclust[j]
+          cluster_minimum <- data_offset + 1L
+          cluster_exhausted <- FALSE
+          
+          if (number_selected == 0L) {
+            cluster_exhausted <- TRUE
+          } else if (cluster_index[number_selected] < cluster_maximum) {
+            cluster_index[number_selected] <-
+              cluster_index[number_selected] + 1L
+          } else {
+            advanced_position <- 0L
+            
+            if (number_selected > 1L) {
+              for (k in seq.int(number_selected - 1L, 1L, by=-1L)) {
+                if (cluster_index[k] <
+                    cluster_maximum - number_selected + k) {
+                  advanced_position <- k
+                  break
+                }
+              }
+            }
+            
+            if (advanced_position > 0L) {
+              cluster_index[advanced_position] <-
+                cluster_index[advanced_position] + 1L
+              if (advanced_position < number_selected) {
+                for (k in seq.int(advanced_position + 1L, number_selected)) {
+                  cluster_index[k] <- cluster_index[k - 1L] + 1L
+                }
+              }
+            } else {
+              cluster_index <- cluster_minimum + seq_len(number_selected) - 1L
+              cluster_exhausted <- TRUE
+            }
+          }
+          
+          if (number_selected > 0L) {
+            current_group1[positions] <- cluster_index
+          }
+          
+          if (!cluster_exhausted) {
+            grouping_available <- TRUE
+            break
+          }
+          
+          data_offset <- data_offset + mclust[j]
+          group_offset <- group_offset + number_selected
+        }
+        
+        if (!grouping_available) {
+          break
+        }
+        
+        process_grouping(current_group1)
+      }
+    }
+  } else {
+    if (nperm_requested > 0L) {
+      for (sample_number in seq_len(nperm_requested)) {
+        if (permute_cluster) {
+          number_group1_clusters <- sum(mct1 > 0L)
+          available_clusters <- seq_len(nclust)
+          selected_clusters <- integer(number_group1_clusters)
+          
+          if (number_group1_clusters > 0L) {
+            for (i in seq_len(number_group1_clusters)) {
+              seed_state <- (c(171L, 172L, 170L) * seed_state) %% c(30269L, 30307L, 30323L)
+              uniform <- sum(seed_state / c(30269, 30307, 30323)) %% 1
+              remaining <- nclust - i + 1L
+              position <- as.integer(uniform * remaining + 1)
+              selected_clusters[i] <- available_clusters[position]
+              available_clusters[position] <- available_clusters[remaining]
+            }
+          }
+          
+          selected_clusters <- sort(selected_clusters)
+          cluster_starts <- c(0L, cumsum(mclust))[selected_clusters] + 1L
+          current_group1 <- integer(0)
+          for (j in seq_along(selected_clusters)) {
+            current_group1 <- c(
+              current_group1,
+              cluster_starts[j] +
+                seq_len(mclust[selected_clusters[j]]) - 1L
+            )
+          }
+        } else {
+          current_group1 <- integer(0)
+          data_offset <- 0L
+          
+          for (j in seq_len(nclust)) {
+            number_selected <- mct1[j]
+            available_columns <- seq_len(mclust[j])
+            selected_columns <- integer(number_selected)
+            
+            if (number_selected > 0L) {
+              for (i in seq_len(number_selected)) {
+                seed_state <- (c(171L, 172L, 170L) * seed_state) %% c(30269L, 30307L, 30323L)
+                uniform <- sum(seed_state / c(30269, 30307, 30323)) %% 1
+                remaining <- mclust[j] - i + 1L
+                position <- as.integer(uniform * remaining + 1)
+                selected_columns[i] <- available_columns[position]
+                available_columns[position] <- available_columns[remaining]
+              }
+            }
+            
+            current_group1 <- c(current_group1, selected_columns + data_offset)
+            data_offset <- data_offset + mclust[j]
+          }
+        }
+        
+        process_grouping(current_group1)
+      }
+    }
   }
-  if (expord) {final_expord <- sum_ordered_stats / nperm}
-    else {final_expord <- NULL}
   
-  return(list(
-    stat = obs_sum, pind = count_pind, p2 = count_p2,
-    p.lower = count_lower, p.upper = count_upper,
-    nml = count_nml, nmr = count_nmr, ix = seed, expord = final_expord,
-    fdr.lower.counts = perm_lower_counts, fdr.upper.counts = perm_upper_counts
-  ))
+  # Enforce the same monotonicity constraints as the final loop.
+  if (number_genes >= 2L) {
+    for (i in seq.int(2L, number_genes)) {
+      lower_multiple[i] <- max(lower_multiple[i - 1L], lower_multiple[i])
+      reverse_index <- number_genes - i + 1L
+      upper_multiple[reverse_index] <- max(upper_multiple[reverse_index], upper_multiple[reverse_index + 1L])
+    }
+  }
+  
+  dist <- dist_counts / number_evaluated
+  expected <- if (expord) expected_sum / number_evaluated else NULL
+  
+  list(pind.lower=lower_individual,
+       pind.upper=upper_individual,
+       p.lower=lower_multiple,
+       p.upper=upper_multiple,
+       nperm=number_evaluated,
+       ix=seed_state,
+       dist=dist,
+       expected=expected)
 }
 
 plot.expord <- function(x, del=0, ...) {

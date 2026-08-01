@@ -9,12 +9,13 @@
 #   
 # This program was written by Dr. Robert J. Gray.
 # User documentation was provided by Dr. Weiliang Qiu.
+#
+# Modified by Peizheng Chen, 2026.
 # ##################################
 
-# For Unix version of 'permax',
-# 'permax' should be installed in the home directory.
+# Load relevant functions
 
-library(permax, lib.loc="~/.")
+source("permax.R")
 options(width=90)
 
 ##########################
